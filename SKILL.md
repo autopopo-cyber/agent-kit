@@ -360,5 +360,35 @@ curl -s "https://api.github.com/search/repositories?q=MCP+server+pushed:>2026-04
 - **Plan-tree timestamp updates: use `str.replace()` not `re.sub`** — multiline regex matching across line boundaries silently fails for plan-tree content. Use simple `content = content.replace(old_ts, new_ts)` via `terminal("python3 << 'PYEOF' ...")` instead. Verified: `str.replace` updated 32 timestamps correctly where `re.sub` with multiline patterns matched 0.
 - **Plan-tree `str.replace()` with non-unique patterns corrupts unrelated items** — a broad pattern like `"> [最后执行: 2026-04-22 22:46 | 🔁]"` appears under every LV.2 item. Replacing it without context bumps timestamps for items that were NOT executed. Fix: include the item title in the `old_string` (e.g., `"#### LV.2 — HEALTH_CHECK 🔁\n> ...\n> [最后执行: 2026-04-22 22:30 | 🔁]"`) or use line-by-line context-aware replacement.
 - **delegate_task subagents return truncated/garbled output for web searches** — prefer direct `curl` to APIs (e.g., GitHub Search API) via terminal for reliable structured results. arXiv API (`export.arxiv.org`) consistently times out (>10s); skip it and rely on GitHub + cached previous scan data instead.
+- **aiohttp session leak in cron jobs** — cron spawns fresh agent sessions that create aiohttp.ClientSession but never close them on exit (5763+ warnings in journalctl). Fix: cron should only scan plan-tree and write pending-tasks.md (lightweight, no external calls). Heavy work runs in the main conversation session where resources are properly managed.
+- **Cron frequency vs cost** — 15min cron costs ~$2-3/day on OpenRouter. 30min is the sweet spot for monitoring without breaking the budget.
+- **Concurrent execution conflict** — idle loop and user conversation can clash. Solution: `agent-busy.lock` file. Lock holders: `conversation` (user chatting) or `idle-loop` (cron running). Lock TTL: 10min auto-expire. User always preempts: finish current subtask, save rest to pending, release lock, switch.
+- **Plan-tree grows unbounded** — inactive roots bloat the file, wasting context tokens. Solution: wiki offload. Inactive roots collapse to one line + `→ wiki:plan-ROOT-NAME.md`. Wiki stores full subtree. Reactivate by restoring from wiki when user returns to that project.
 - **Skill count undercounting with `find -maxdepth 3`** — skills can nest 4+ levels deep (e.g., `mlops/training/axolotl/SKILL.md`). Use `find ~/.hermes/skills -name "SKILL.md"` without depth limit, or `-maxdepth 10`, to get the true count. Verified: `-maxdepth 3` returned 69; actual count was 90.
 - **GitHub Search `created:>DATE` filters yield empty results for niche topics** — for fields like quadruped locomotion, strict date filters often return nothing. Use `sort=stars&order=desc` with broader keyword queries, or target known orgs (`unitree`, `boston-dynamics`) directly.
+
+
+## Borrowed Architectures (v0.3)
+
+Key patterns borrowed from GenericAgent and ARIS after deep analysis:
+
+### From GenericAgent
+- **L1 ≤30-line index** (`~/.hermes/index.md`): Minimal sufficient pointer principle — upper layers only store shortest identifier to locate lower layers, one word more is redundancy
+- **Auto-crystallization**: When same pattern observed ≥3 times, automatically create a skill
+- **Action-Verified Only**: No Execution, No Memory — only tool-verified information enters long-term storage
+- **3-step finish hard constraint**: Every idle subtask MUST: (a) write idle-log, (b) update plan-tree timestamp, (c) check pending-tasks
+
+### From ARIS
+- **Meta-Optimize**: Analyze usage logs and propose optimizations to SKILL.md files, defaults, and workflow parameters
+- **Research Wiki pattern**: Persistent knowledge base with typed entity relationships (papers, ideas, experiments, claims + edges.jsonl)
+- **Cross-model adversarial review**: Use different models for execution vs. review to avoid single-model blind spots
+
+### Comparison Table
+
+| Mechanism | GenericAgent | ARIS | This Skill |
+|-----------|-------------|------|-----------|
+| Self-evolution | Auto-crystallize after each task | /meta-optimize from usage logs | Idle loop + auto-crystallize ≥3x |
+| Memory layers | L0→L1(≤30)→L2→L3→L4 | wiki (4 entity types + graph) | index(≤30) + plan-tree + wiki + Hindsight |
+| Idle trigger | Manual autonomous SOP | Sleep mode | Cron 30min + busy lock |
+| Finish guarantee | 3-step hard constraint | None | 3-step hard constraint |
+| Token efficiency | <30K ctx (6x less) | Standard | Index-first routing |
