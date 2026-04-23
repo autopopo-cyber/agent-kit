@@ -482,39 +482,39 @@
 
 ---
 
-## Organization Architecture (v0.4)
+## Collaboration Framework (v0.4)
 
-Auto-Drive v0.3 gave individual agents a survival drive. v0.4 gives them **organization** — the mechanism to break through the 200K context limit through hierarchical collaboration.
+Auto-Drive v0.3 gave individual agents a survival drive. v0.4 gives them **collaboration** — the mechanism to break through the 200K context limit through layered task coordination.
 
-### Why Organization Is Necessary
+### Why Collaboration Is Necessary
 
-| Without Organization | With Organization |
+| Solo Agent | Collaborative Agents |
 |---|---|
 | Single agent, 200K context ceiling | N agents, unlimited effective context |
 | One plan-tree, one perspective | Layered plan-trees, domain ownership |
 | Synchronous communication (floods context) | Async MQ + wiki paths (never floods) |
 | Single point of failure | Heartbeat + task reassignment |
-| Can't scale beyond one agent's capacity | Scales to any number of agents |
+| Can't scale beyond one agent's capacity | Scales horizontally |
 
 ### Three-Layer Structure
 
-- **Layer 0 (Leader)**: Maintains global plan-tree L0-L1. Allocates tasks. Never executes.
+- **Layer 0 (Coordinator)**: Maintains global plan-tree L0-L1. Allocates tasks. Never executes.
 - **Layer 1 (Domain Lead)**: Maintains domain subtree L1-L3. Decomposes tasks. Summarizes upward.
 - **Layer 2 (Worker)**: Executes single task. Records to wiki. Reports completion.
 
 ### Key Mechanisms
 
-1. **Hierarchical Summary**: 10:1 compression per layer. Leader sees 200-char summaries, not 200K details.
-2. **AOP (Agent Organization Protocol)**: Messages ≤200 chars. Details in wiki. Paths, not content.
+1. **Hierarchical Summary**: 10:1 compression per layer. Coordinator sees 200-char summaries, not 200K details.
+2. **AOP (Agent Orchestration Protocol)**: Messages ≤200 chars. Details in wiki. Paths, not content.
 3. **Pre-dispatch**: Tasks published T-30min. Workers pre-load. No start-time bottleneck.
-4. **Heartbeat**: Every 60s. Leader detects offline workers, reassigns tasks.
+4. **Heartbeat**: Every 60s. Coordinator detects offline workers, reassigns tasks.
 5. **Context Isolation**: Each agent only loads its own subtree + necessary background.
 
 ### Implementation Path
 
 | Phase | Topology | Status |
 |---|---|---|
-| Phase 1 | Single agent, wiki offload simulates hierarchy | ✅ Current |
-| Phase 2 | Cloud leader + local worker (Redis MQ) | ⏳ Next |
-| Phase 3 | 4-node team (leader + navi + rpa + ops) | Planned |
-| Phase 4 | Open organization (any agent can join via AOP) | Future |
+| Phase 1 | Single agent, wiki offload simulates layers | ✅ Current |
+| Phase 2 | Cloud coordinator + local worker (Redis MQ) | ⏳ Next |
+| Phase 3 | Small team (coordinator + domain workers) | Planned |
+| Phase 4 | Protocol standardization, open to any compatible agent | Future |
