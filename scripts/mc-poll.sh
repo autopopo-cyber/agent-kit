@@ -193,7 +193,16 @@ curl -sf -X PUT -H "x-api-key: $MC_API_KEY" "$MC_URL/api/tasks/$TASK_ID" \
 
 echo "[#$GID] ▶ 执行任务 #$TASK_ID: $TITLE" >&2
 
-PROMPT="【MC任务 #$TASK_ID】$TITLE。完成后将结果写入 ~/wiki-$GID/raw/task-$TASK_ID-result.md，并执行 git add + git commit 提交代码。"
+PROMPT="【MC任务 #$TASK_ID】$TITLE。
+
+完成后必须写入两个文件：
+1. ~/wiki-$GID/raw/task-$TASK_ID-result.md — 完整执行报告（做了什么、测试结果、决策）
+2. ~/plan-tree-v4.md — 增量更新（追加本次决策点、状态变化、新依赖关系）
+
+Plan-Tree 更新格式：
+  | $(date +%m-%d %H:%M) | $TITLE | 决策: [选择] | 原因: [理由] | 影响: [下游影响] |
+  
+并执行 git add + git commit 提交所有变更。"
 
 # ─── 注入 Plan-Tree 上下文（如果存在）───
 PLANTREE_FILE="$HOME/plan-tree-v4.md"
@@ -230,6 +239,12 @@ if [ ! -s "$RESULT_FILE" ]; then
 fi
 
 echo "[#$GID] 📄 产物: $RESULT_FILE ($(wc -l < "$RESULT_FILE") lines)" >&2
+
+# 也检查 Plan-Tree 是否更新
+PLANTREE_FILE="$HOME/plan-tree-v4.md"
+if [ -f "$PLANTREE_FILE" ]; then
+  echo "[#$GID] 🌲 PlanTree: $PLANTREE_FILE ($(wc -l < "$PLANTREE_FILE") lines)" >&2
+fi
 
 if llm_ping; then
   heartbeat
