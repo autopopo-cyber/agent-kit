@@ -193,7 +193,11 @@ curl -sf -X PUT -H "x-api-key: $MC_API_KEY" "$MC_URL/api/tasks/$TASK_ID" \
 
 echo "[#$GID] ▶ 执行任务 #$TASK_ID: $TITLE" >&2
 
-PROMPT="【MC任务 #$TASK_ID】$TITLE。完成后将完整执行报告写入 ~/wiki-$GID/raw/task-$TASK_ID-result.md，包含：做了什么、测试结果、以及明确的「## 决策点」小节（格式: | 时间 | 决策 | 选项 | 选择 | 理由 |）。执行 git add + git commit。"
+PROMPT="【MC任务 #$TASK_ID】$TITLE。
+
+1. 完成代码/测试/文档，写入 ~/wiki-$GID/raw/task-$TASK_ID-result.md（含 ## 决策点 小节）
+2. 完成后立即执行上报: curl -sf -X PUT -H 'x-api-key: $MC_API_KEY' -H 'Content-Type: application/json' '$MC_URL/api/tasks/$TASK_ID' -d '{\"status\":\"review\"}'
+3. 然后 git add + git commit"
 
 # ─── 注入 Plan-Tree 上下文（如果存在）───
 PLANTREE_FILE="$HOME/plan-tree-v4.md"
@@ -209,7 +213,7 @@ fi
 
 HERMES_BIN="${HERMES_BIN:-$HOME/.local/bin/hermes}"
 if [ -x "$HERMES_BIN" ]; then
-  timeout 120 "$HERMES_BIN" chat -q "$PROMPT" --yolo --model "$LLM_MODEL" 2>&1 | tail -5
+  timeout 240 "$HERMES_BIN" chat -q "$PROMPT" --yolo --model "$LLM_MODEL" 2>&1 | tail -5
   HX=$?
 else
   echo "[#$GID] hermes 不可用" >&2; HX=1
