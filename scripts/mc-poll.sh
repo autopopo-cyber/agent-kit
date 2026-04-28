@@ -193,16 +193,7 @@ curl -sf -X PUT -H "x-api-key: $MC_API_KEY" "$MC_URL/api/tasks/$TASK_ID" \
 
 echo "[#$GID] ▶ 执行任务 #$TASK_ID: $TITLE" >&2
 
-PROMPT="【MC任务 #$TASK_ID】$TITLE。
-
-完成后必须写入两个文件：
-1. ~/wiki-$GID/raw/task-$TASK_ID-result.md — 完整执行报告（做了什么、测试结果、决策）
-2. ~/plan-tree-v4.md — 增量更新（追加本次决策点、状态变化、新依赖关系）
-
-Plan-Tree 更新格式：
-  | $(date +%m-%d %H:%M) | $TITLE | 决策: [选择] | 原因: [理由] | 影响: [下游影响] |
-  
-并执行 git add + git commit 提交所有变更。"
+PROMPT="【MC任务 #$TASK_ID】$TITLE。完成后将完整执行报告写入 ~/wiki-$GID/raw/task-$TASK_ID-result.md，包含：做了什么、测试结果、以及明确的「## 决策点」小节（格式: | 时间 | 决策 | 选项 | 选择 | 理由 |）。执行 git add + git commit。"
 
 # ─── 注入 Plan-Tree 上下文（如果存在）───
 PLANTREE_FILE="$HOME/plan-tree-v4.md"
@@ -252,6 +243,27 @@ if llm_ping; then
     -H "Content-Type: application/json" \
     -d '{"status":"review"}' > /dev/null 2>&1
   echo "[#$GID] ✅ → review | 🔓 锁释放(trap EXIT)" >&2
+  
+  # ─── Phase 3.5: 增量更新 Plan-Tree（bash 提取，不用 LLM）───
+  DECISIONS=$(sed -n '/^## 决策点/,/^## /p' "$RESULT_FILE" 2>/dev/null | grep -E '^\|' | head -10)
+  if [ -n "$DECISIONS" ]; then
+    NOW=$(date '+%Y-%m-%d %H:%M')
+    if [ ! -f "$PLANTREE_FILE" ]; then
+      # 首次创建
+      cat > "$PLANTREE_FILE" << PTEOF
+# $GID Plan-Tree v4 — 自动维护
+
+> 更新: $NOW
+
+## 决策点
+
+| 时间 | 决策 | 选项 | 选择 | 理由 |
+|------|------|------|------|------|
+PTEOF
+    fi
+    echo "$DECISIONS" >> "$PLANTREE_FILE"
+    echo "[#$GID] 🌲 PlanTree 增量更新 ($(echo "$DECISIONS" | wc -l) 条决策)" >&2
+  fi
 else
   echo "[#$GID] ⚠️ 执行完但LLM不通 — 释放锁" >&2
 fi
