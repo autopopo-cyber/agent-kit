@@ -11,7 +11,7 @@ if not GID:
 
 try:
     # Query by global_id only — no names, no URL encoding issues
-    url = f"{MC}/api/tasks?assigned_to={GID}&status=in_progress&limit=1"
+    url = f"{MC}/api/tasks?assigned_to={GID}&status=inbox&limit=1"
     req = urllib.request.Request(url)
     req.add_header('x-api-key', KEY)
     with urllib.request.urlopen(req, timeout=10) as resp:
