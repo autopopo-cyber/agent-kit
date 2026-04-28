@@ -1,0 +1,16 @@
+# ========== Agent #{GID} Cron Template ==========
+# Copy this, replace {GID} with your agent's global_id (101-108)
+
+# Heartbeat (every 30s)
+* * * * * (sleep 0; MC_AGENT_ID={GID} bash ~/.xianqin/mc/heartbeat.sh) 2>/dev/null
+* * * * * (sleep 30; MC_AGENT_ID={GID} bash ~/.xianqin/mc/heartbeat.sh) 2>/dev/null
+
+# Developer task poll (every 10 min, offset {OFFSET}s)
+*/10 * * * * sleep {OFFSET}; MC_URL=http://100.80.136.1:3000 MC_AGENT_GLOBAL_ID={GID} MC_API_KEY=*** bash ~/.xianqin/mc/mc-poll.sh >> /tmp/mc-poll-{GID}.log 2>&1
+
+# QA audit poll (every 10 min, for QA agents 106-108)
+*/10 * * * * sleep {OFFSET}; MC_URL=http://100.80.136.1:3000 MC_AGENT_GLOBAL_ID={GID} MC_API_KEY=*** bash ~/.xianqin/mc/qa-poll.sh >> /tmp/qa-poll-{GID}.log 2>&1
+
+# Offset table (to avoid collisions):
+# 101 相邦: 0s | 102 白起: 15s | 103 王翦: 30s | 104 丞相: 45s
+# 105 萱萱: 60s | 106 俊秀: 75s | 107 雪莹: 90s | 108 红婳: 105s
