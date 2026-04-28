@@ -195,6 +195,18 @@ echo "[#$GID] ▶ 执行任务 #$TASK_ID: $TITLE" >&2
 
 PROMPT="【MC任务 #$TASK_ID】$TITLE。完成后将结果写入 ~/wiki-$GID/raw/task-$TASK_ID-result.md，并执行 git add + git commit 提交代码。"
 
+# ─── 注入 Plan-Tree 上下文（如果存在）───
+PLANTREE_FILE="$HOME/plan-tree-v4.md"
+if [ -f "$PLANTREE_FILE" ]; then
+  PLANTREE_CTX=$(head -100 "$PLANTREE_FILE" 2>/dev/null | grep -E "决策|依赖|预测|关联|状态|in_progress|inbox" | head -20 | sed 's/^/  /')
+  if [ -n "$PLANTREE_CTX" ]; then
+    PROMPT="$PROMPT
+
+【Plan-Tree 上下文 — 当前决策轨迹和跨Agent依赖】
+$PLANTREE_CTX"
+  fi
+fi
+
 HERMES_BIN="${HERMES_BIN:-$HOME/.local/bin/hermes}"
 if [ -x "$HERMES_BIN" ]; then
   timeout 120 "$HERMES_BIN" chat -q "$PROMPT" --yolo --model "$LLM_MODEL" 2>&1 | tail -5
