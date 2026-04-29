@@ -1,0 +1,52 @@
+{
+  "template_version": "1.0",
+  "task_type": "fleet_self_test",
+  "input_template": {
+    "preconditions": [
+      "已阅读 ~/llm-wiki/selftest/操作手册.md",
+      "HOME 环境变量指向真实路径",
+      "Hermes CLI 可用"
+    ],
+    "required_files": [
+      "~/llm-wiki/selftest/test_tailscale.sh",
+      "~/llm-wiki/selftest/test_hermes.sh",
+      "~/llm-wiki/selftest/test_wiki.sh",
+      "~/llm-wiki/selftest/test_memos.sh",
+      "~/llm-wiki/selftest/test_mission_control.sh",
+      "~/llm-wiki/selftest/test_fleet.sh",
+      "~/llm-wiki/selftest/test_plantree.sh"
+    ],
+    "required_env": {
+      "GID": "{agent的 global_id}",
+      "HOME": "/home/{用户}"
+    }
+  },
+  "execution_template": {
+    "stages": [
+      {"id": "plan", "name": "规划", "desc": "阅读操作手册，理解7个子系统", "check": "已确认所有前置条件"},
+      {"id": "execute", "name": "执行", "desc": "运行 run_all.sh", "check": "7个子系统全部执行"},
+      {"id": "collect", "name": "收集", "desc": "汇总 FINAL_REPORT.txt", "check": "报告文件存在且完整"},
+      {"id": "report", "name": "报告", "desc": "将结果写入此任务的 output_json", "check": "output_json 字段非空"}
+    ],
+    "run_command": "cd ~/llm-wiki/selftest && HOME=/home/$USER GID={GID} bash run_all.sh"
+  },
+  "output_template": {
+    "schema": {
+      "agent": "string (agent名称)",
+      "gid": "string (全局ID)",
+      "timestamp": "number (unix时间戳)",
+      "subsystems": {
+        "tailscale": {"pass": "number", "fail": "number", "items": ["string"]},
+        "hermes": {"pass": "number", "fail": "number", "items": ["string"]},
+        "wiki": {"pass": "number", "fail": "number", "items": ["string"]},
+        "memos": {"pass": "number", "fail": "number", "items": ["string"]},
+        "mc": {"pass": "number", "fail": "number", "items": ["string"]},
+        "fleet": {"pass": "number", "fail": "number", "items": ["string"]},
+        "plantree": {"pass": "number", "fail": "number", "items": ["string"]}
+      },
+      "total_score": "number (百分制)",
+      "failed_items": ["string (失败项描述)"],
+      "conclusion": "string (🟢可以接任务 / 🟡可接简单任务 / 🔴需要修复)"
+    }
+  }
+}
