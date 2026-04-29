@@ -1,5 +1,5 @@
 #!/bin/bash
-# MC Task Poller v7.2 — 锁内包含任务ID，心跳永远先发
+# MC Task Poller v7.4 — 超时检测 + 进度监控 + 急停 + 诊断留痕
 set -e
 
 # 绕过代理直连tailscale (100.64.0.0/10)
@@ -11,6 +11,11 @@ LLM_MODEL="${MC_AGENT_LLM_MODEL:-deepseek-chat}"
 
 LOCK="$HOME/.xianqin/mc-poll-${GID}.lock"       # 格式: PID:TASK_ID
 LOCK_TTL=600                                      # 10分钟
+
+# ─── v7.4: 超时与进度监控 ───
+STUCK_TIMEOUT="${MC_STUCK_TIMEOUT:-1800}"         # 30分钟无产物更新 → 视为卡住
+HERMES_TIMEOUT="${MC_HERMES_TIMEOUT:-600}"        # 10分钟硬超时
+PROGRESS_CHECK_INTERVAL=60                         # 每60秒检查一次产物
 
 # ─── GID→DBid ───
 case "$GID" in
@@ -115,6 +120,54 @@ is_zombie_lock() {
   return 0
 }
 
+# ─── v7.4: 写入诊断文件（异常退出时调用）───
+write_diagnostic() {
+  local task_id="$1" reason="$2" extra="${3:-}"
+  local diag_file="$HOME/wiki-${GID}/raw/task-${task_id}-diagnostic.json"
+  local now
+  now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  
+  # 收集产物状态
+  local result_exists="false" result_size=0 result_lines=0 result_mtime=0
+  if [ -f "$RESULT_FILE" ]; then
+    result_exists="true"
+    result_size=$(stat -c %s "$RESULT_FILE" 2>/dev/null || echo 0)
+    result_lines=$(wc -l < "$RESULT_FILE" 2>/dev/null || echo 0)
+    result_mtime=$(stat -c %Y "$RESULT_FILE" 2>/dev/null || echo 0)
+  fi
+  
+  python3 -c "
+import json
+d={
+  'task_id': '$task_id',
+  'agent_gid': '$GID',
+  'agent_dbid': '$DBID',
+  'timestamp': '$now',
+  'exit_reason': '$reason',
+  'exit_detail': '$extra',
+  'result_file': {
+    'exists': $result_exists,
+    'size_bytes': $result_size,
+    'lines': $result_lines,
+    'mtime_unix': $result_mtime,
+    'mtime_human': '$(date -d "@$result_mtime" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "N/A")'
+  },
+  'stuck_timeout': $STUCK_TIMEOUT,
+  'hermes_timeout': $HERMES_TIMEOUT
+}
+with open('$diag_file', 'w') as f:
+    json.dump(d, f, indent=2, ensure_ascii=False)
+print('DIAGNOSTIC_WRITTEN')
+" 2>/dev/null && echo "[#$GID] 📋 诊断: $diag_file ($reason)" >&2 || echo "[#$GID] ⚠️ 诊断写入失败" >&2
+  
+  # 同时上报 MC
+  if [ -n "$MC_API_KEY" ]; then
+    curl -sf -X PUT -H "x-api-key: $MC_API_KEY" -H "Content-Type: application/json" \
+      "$MC_URL/api/tasks/$task_id" \
+      -d "{\"status\":\"failed\",\"outcome\":\"$reason: $(echo "$extra" | cut -c1-200)\"}" > /dev/null 2>&1 || true
+  fi
+}
+
 # ═══════════════════════════════════════════
 # Phase 0: 心跳 — 永远最先执行
 # ═══════════════════════════════════════════
@@ -140,26 +193,48 @@ if parse_lock; then
 fi
 
 # ═══════════════════════════════════════════
-# Phase 0.6: 产物自检 — 检查上次执行的成果，更新 MC 状态
+# Phase 0.6: 产物自检 + 诊断报告 — 检查上次执行的成果，更新 MC 状态
 # ═══════════════════════════════════════════
 WIKI_DIR="$HOME/wiki-${GID}/raw"
 if [ -d "$WIKI_DIR" ] && [ -n "$MC_API_KEY" ]; then
+  # ─── 0.6a: 产物自检（原有逻辑）───
   for rf in "$WIKI_DIR"/task-*-result.md; do
     [ -f "$rf" ] || continue
-    # 提取 task_id: task-104-result.md → 104
     tid=$(basename "$rf" | sed 's/task-\([0-9]*\)-result\.md/\1/')
     [ -z "$tid" ] && continue
     
-    # 查 MC 当前状态
     ts=$(curl -sf -H "x-api-key: $MC_API_KEY" "$MC_URL/api/tasks/$tid" 2>/dev/null | \
          python3 -c "import json,sys; d=json.load(sys.stdin); d=d if isinstance(d,dict) else d[0]; print(d.get('status',''))" 2>/dev/null || echo "")
     
-    # 只处理 in_progress 的任务（说明执行完了但没更新状态）
     if [ "$ts" = "in_progress" ]; then
       curl -sf -X PUT -H "x-api-key: $MC_API_KEY" -H "Content-Type: application/json" \
         "$MC_URL/api/tasks/$tid" \
         -d "{\"status\":\"review\",\"outcome\":\"产物已生成: $(basename $rf)\"}" > /dev/null 2>&1 && \
         echo "[#$GID] 📤 产物自检: task=#$tid in_progress→review ($(basename $rf))" >&2
+    fi
+  done
+  
+  # ─── 0.6b: 诊断文件检查（v7.4 新增）───
+  for df in "$WIKI_DIR"/task-*-diagnostic.json; do
+    [ -f "$df" ] || continue
+    tid=$(basename "$df" | sed 's/task-\([0-9]*\)-diagnostic\.json/\1/')
+    [ -z "$tid" ] && continue
+    
+    # 读取诊断信息
+    reason=$(python3 -c "import json; d=json.load(open('$df')); print(d.get('exit_reason',''))" 2>/dev/null || echo "")
+    detail=$(python3 -c "import json; d=json.load(open('$df')); print(d.get('exit_detail','')[:100])" 2>/dev/null || echo "")
+    
+    ts=$(curl -sf -H "x-api-key: $MC_API_KEY" "$MC_URL/api/tasks/$tid" 2>/dev/null | \
+         python3 -c "import json,sys; d=json.load(sys.stdin); d=d if isinstance(d,dict) else d[0]; print(d.get('status',''))" 2>/dev/null || echo "")
+    
+    # 如果MC状态尚未标记为 failed → 补充上报
+    if [ "$ts" != "failed" ] && [ "$ts" != "review" ] && [ "$ts" != "completed" ]; then
+      curl -sf -X PUT -H "x-api-key: $MC_API_KEY" -H "Content-Type: application/json" \
+        "$MC_URL/api/tasks/$tid" \
+        -d "{\"status\":\"failed\",\"outcome\":\"诊断报告: $reason — $detail\"}" > /dev/null 2>&1 && \
+        echo "[#$GID] 🩺 诊断上报: task=#$tid failed ($reason)" >&2
+    else
+      echo "[#$GID] 📋 诊断文件: task=#$tid ($reason) — MC已$ts，跳过上报" >&2
     fi
   done
 fi
@@ -185,13 +260,16 @@ trap 'rm -f "$LOCK"' EXIT
 echo "[#$GID] 🔒 获取锁 pid=$$ task=#$TASK_ID" >&2
 
 # ═══════════════════════════════════════════
-# Phase 2: 执行
+# Phase 2: 执行（v7.4: 后台 + 看门狗 + 超时检测）
 # ═══════════════════════════════════════════
+# 先定义 RESULT_FILE（看门狗需要）
+RESULT_FILE="$HOME/wiki-${GID}/raw/task-${TASK_ID}-result.md"
+
 curl -sf -X PUT -H "x-api-key: $MC_API_KEY" "$MC_URL/api/tasks/$TASK_ID" \
   -H "Content-Type: application/json" \
   -d '{"status":"in_progress"}' > /dev/null 2>&1
 
-echo "[#$GID] ▶ 执行任务 #$TASK_ID: $TITLE" >&2
+echo "[#$GID] ▶ 执行任务 #$TASK_ID: $TITLE (超时=${HERMES_TIMEOUT}s, 卡住检测=${STUCK_TIMEOUT}s)" >&2
 
 PROMPT="【MC任务 #$TASK_ID】$TITLE。
 
@@ -212,24 +290,99 @@ $PLANTREE_CTX"
 fi
 
 HERMES_BIN="${HERMES_BIN:-$HOME/.local/bin/hermes}"
-if [ -x "$HERMES_BIN" ]; then
-  timeout 240 "$HERMES_BIN" chat -q "$PROMPT" --yolo --model "$LLM_MODEL" 2>&1 | tail -5
-  HX=$?
-else
-  echo "[#$GID] hermes 不可用" >&2; HX=1
+if [ ! -x "$HERMES_BIN" ]; then
+  echo "[#$GID] hermes 不可用" >&2
+  rm -f "$LOCK"
+  exit 0
+fi
+
+# ─── v7.4: 后台执行 + 看门狗 ───
+HX=0
+STUCK_BY_WATCHDOG=0
+HERMES_PID=""
+WATCHDOG_PID=""
+
+# 启动 hermes（后台，带超时）
+timeout "$HERMES_TIMEOUT" "$HERMES_BIN" chat -q "$PROMPT" --yolo --model "$LLM_MODEL" &
+HERMES_PID=$!
+echo "[#$GID] 🚀 hermes started (pid=$HERMES_PID)" >&2
+
+# ─── 看门狗: 监控产物文件 mtime ───
+(
+  STAGNANT=0
+  LAST_MTIME=$(stat -c %Y "$RESULT_FILE" 2>/dev/null || echo 0)
+  
+  while kill -0 "$HERMES_PID" 2>/dev/null; do
+    sleep "$PROGRESS_CHECK_INTERVAL"
+    
+    # 检查产物是否有进展
+    CURR_MTIME=$(stat -c %Y "$RESULT_FILE" 2>/dev/null || echo 0)
+    if [ "$CURR_MTIME" -gt "$LAST_MTIME" ]; then
+      LAST_MTIME="$CURR_MTIME"
+      STAGNANT=0
+      echo "[#$GID] 👁 看门狗: 产物已更新 (${STAGNANT}s 无停滞)" >&2
+    else
+      STAGNANT=$((STAGNANT + PROGRESS_CHECK_INTERVAL))
+      echo "[#$GID] 👁 看门狗: 停滞 ${STAGNANT}s (产物无变化)" >&2
+    fi
+    
+    # 超时检测
+    if [ "$STAGNANT" -ge "$STUCK_TIMEOUT" ]; then
+      echo "[#$GID] ⏰ 急停! 产物 ${STAGNANT}s 无更新 → 中断 hermes (pid=$HERMES_PID)" >&2
+      # 优雅终止
+      kill -TERM "$HERMES_PID" 2>/dev/null
+      sleep 5
+      # 强制终止（如果还活着）
+      if kill -0 "$HERMES_PID" 2>/dev/null; then
+        kill -KILL "$HERMES_PID" 2>/dev/null
+        echo "[#$GID] 💀 强制终止 hermes" >&2
+      fi
+      # 写入诊断
+      write_diagnostic "$TASK_ID" "STUCK" "产物 ${STAGNANT}s 无更新（超时阈值 ${STUCK_TIMEOUT}s）"
+      echo "STUCK_BY_WATCHDOG" > "$HOME/.xianqin/mc-poll-${GID}-stuck.flag"
+      break
+    fi
+  done
+) &
+WATCHDOG_PID=$!
+
+# 等待 hermes 结束
+set +e
+wait "$HERMES_PID" 2>/dev/null
+HX=$?
+set -e
+
+# 清理看门狗
+kill "$WATCHDOG_PID" 2>/dev/null || true
+wait "$WATCHDOG_PID" 2>/dev/null || true
+
+# 检查是否被看门狗杀死
+if [ -f "$HOME/.xianqin/mc-poll-${GID}-stuck.flag" ]; then
+  rm -f "$HOME/.xianqin/mc-poll-${GID}-stuck.flag"
+  echo "[#$GID] ⏰ 被看门狗急停 — 释放锁" >&2
+  exit 0
+fi
+
+# 检查是否超时
+if [ "$HX" -eq 124 ]; then
+  echo "[#$GID] ⏱ hermes 超时 (${HERMES_TIMEOUT}s) — 写入诊断" >&2
+  write_diagnostic "$TASK_ID" "TIMEOUT" "hermes 执行超过 ${HERMES_TIMEOUT}s（timeout 命令杀死）"
+  exit 0
+fi
+
+# 检查 hermes 退出码
+if [ "$HX" -ne 0 ]; then
+  echo "[#$GID] ❌ hermes 异常退出 (exit=$HX) — 写入诊断" >&2
+  write_diagnostic "$TASK_ID" "HERMES_EXIT_$HX" "hermes 退出码=$HX"
+  exit 0
 fi
 
 # ═══════════════════════════════════════════
 # Phase 3: 验证 + 交活 + 销毁锁
 # ═══════════════════════════════════════════
-if [ "${HX:-1}" -ne 0 ]; then
-  echo "[#$GID] ❌ hermes 失败 — 释放锁" >&2
-  exit 0
-fi
-
-RESULT_FILE="$HOME/wiki-${GID}/raw/task-${TASK_ID}-result.md"
 if [ ! -s "$RESULT_FILE" ]; then
-  echo "[#$GID] ❌ 产物缺失 — 释放锁" >&2
+  echo "[#$GID] ❌ 产物缺失 — 写入诊断" >&2
+  write_diagnostic "$TASK_ID" "NO_RESULT" "hermes 成功退出但未生成产物文件"
   exit 0
 fi
 
